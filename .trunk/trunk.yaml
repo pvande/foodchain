@@ -1,0 +1,28 @@
+version: 0.1
+cli:
+  version: 1.21.0
+
+plugins:
+  sources:
+    - id: trunk
+      ref: v1.4.5
+      uri: https://github.com/trunk-io/plugins
+
+runtimes:
+  enabled:
+    - node@18.12.1
+    - python@3.10.8
+    - ruby@3.1.4
+
+lint:
+  enabled:
+    - rubocop@1.39.0
+    - markdownlint@0.39.0
+
+actions:
+  disabled:
+    - trunk-announce
+    - trunk-check-pre-push
+    - trunk-fmt-pre-commit
+  enabled:
+    - trunk-upgrade-available
