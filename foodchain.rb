@@ -15,22 +15,12 @@ class Downloader
     @headers = headers
     @handler = block
     @result = $gtk.http_get(url, headers)
+    @result.merge!(url: url, request_headers: headers)
   end
 
-  # Tests for request completion, and dispatches based on response codes.
-  # Successful requests will invoke the originally passed callback block.
+  # Calls the handler the result once the request has been completed.
   def tick
-    return unless @result[:complete]
-
-    code = @result[:http_response_code]
-    case code
-    when 200
-      @handler.call(@result)
-    when 304
-      $gtk.log_info "#{@url} is up-to-date.", "Foodchain"
-    else
-      $gtk.log_error "GET #{@url} returned status code #{code}", "Foodchain"
-    end
+    @handler.call(@result) if @result[:complete]
   end
 
   # @returns [Boolean] Has this request completed?
@@ -64,10 +54,21 @@ class Dependency
     @download_queue.each(&:tick).reject!(&:complete?)
   end
 
-  # Creates and enqueues a new download.
+  # Creates and enqueues a new download. Dispatches to the passed block on
+  # successful requests.
   # @see Downloader#initialize
   def download(url, headers, &block)
-    @download_queue << Downloader.new(url, headers, &block)
+    @download_queue << Downloader.new(url, headers) do |result|
+      case (code = result[:http_response_code])
+      when 200
+        next $state.outdated << key if $state.locks[key]
+        yield result
+      when 304
+        $gtk.log_info "#{key} is up-to-date.", "Foodchain"
+      else
+        $gtk.log_error "GET #{url} returned status code #{code}", "Foodchain"
+      end
+    end
   end
 
   # Records a new lock version for this dependency.
@@ -147,7 +148,7 @@ class Dependency::GitHub < Dependency
 
   # {include:Dependency#key}
   def key
-    "github:#{@owner}/#{@repo}/#{@path}}"
+    "github:#{@owner}/#{@repo}/#{@path}"
   end
 
   # {include:Dependency#boot}
@@ -156,7 +157,6 @@ class Dependency::GitHub < Dependency
     headers = [ ACCEPT_HEADER, "If-None-Match: #{$state.locks[key]}" ]
 
     download(url, headers) do |result|
-      result.merge!(url: @url)
       update_lock_version(result)
       process(result, @destination)
     end
@@ -251,6 +251,8 @@ def github(owner, repo, file, ref: nil, destination: nil)
   )
 end
 
+HELP_FLAGS = %i[ help noop no-op dryrun dry-run ]
+UPDATE_FLAGS = %i[ update upgrade overwrite ]
 # Implements the basic fetch loop.
 #
 # @NOTE This hooks into the `GTK::Runtime` at a fairly low level, specifically
@@ -260,9 +262,34 @@ end
 def $gtk.tick_core
   @is_inside_tick = true
 
-  if Kernel.global_tick_count.zero?
-    $gtk.log_info "Verifying dependencies…", "Foodchain"
+  unless $gtk.cli_arguments.key?(:eval)
+    $gtk.log_error "\n\n" + <<~TEXT, "Foodchain"
+      Foodchain is not intended to be required in your game's code.
+      Please move your dependencies into a separate file, and run:
 
+        #{$gtk.argv} --eval <your-dependency-file.rb>
+    TEXT
+    return $gtk.request_quit
+  end
+
+  if ($gtk.cli_arguments.keys & HELP_FLAGS).any?
+    $gtk.log_debug "\n\n" + <<~HELP, "Foodchain"
+      Dependency management by Foodchain
+      https://github.com/pvande/foodchain
+
+      Installs the dependencies described in #{$gtk.cli_arguments[:eval]}.
+
+      Options:
+        --update [dependency-key ...]
+          Updates the identified dependencies with their current versions. If no
+          dependencies are identified, all non-current dependencies are updated.
+        --help
+          Displays this help message.
+    HELP
+    return $gtk.request_quit
+  end
+
+  if Kernel.global_tick_count.zero?
     contents = $gtk.read_file($state.depfile)
     config, _, locks = contents.partition("__END__\n")
     config.rstrip!
@@ -272,11 +299,38 @@ def $gtk.tick_core
     locks.reject! { |x| x.start_with?("#") }
     locks = locks.to_h { |line| line.split("\t") }
 
-    $state.state.depfile = $state.depfile
     $state.config = config
     $state.locks = locks.slice(*$state.deps.map(&:key).sort)
     $state.update_lock_versions = (locks.size != $state.locks.size)
+    $state.outdated = []
 
+    action = "Installing"
+    upgrades = nil
+    if ($gtk.cli_arguments.keys & UPDATE_FLAGS).any?
+      action = "Upgrading"
+      upgrades = $gtk.cli_arguments.values_at(*UPDATE_FLAGS)
+      upgrades.map! { |opt| Array(opt) }.flatten!
+
+      if upgrades.empty?
+        $state.locks.clear
+      else
+        unknown = upgrades - $state.deps.map(&:key)
+        if unknown.any?
+          $gtk.log_error "\n\n" + <<~TEXT, "Foodchain"
+            The following dependencies are unknown:
+            #{unknown.map! { |x| "  * " + x }.join("\n")}
+
+            Please pass the dependency keys from #{$gtk.cli_arguments[:eval]},
+            or pass no argument to upgrade all dependencies.
+          TEXT
+          return $gtk.request_quit
+        end
+
+        $state.locks = $state.locks.except(*upgrades)
+      end
+    end
+
+    $gtk.log_info "#{action} dependencies…", "Foodchain"
     $state.deps.each(&:boot)
   end
 
@@ -290,13 +344,33 @@ def $gtk.tick_core
       "",
       "__END__",
       "",
-      "# The lines below indicate the versions of your installed dependencies.",
-      "# To upgrade dependencies, simply remove the corresponding lines below.",
+      "# The lines below pin the versions of your installed dependencies.",
+      "# Removing or changing these lines may result in those dependencies",
+      "# being overwritten on your next installation.",
       "",
-      $state.locks.to_a.map { |pair| pair.join("\t") },
+      $state.locks.to_a.map { |pair| pair.join("\t") }.sort,
     ]
 
     $gtk.write_file($state.depfile, contents.flatten.join("\n"))
+  end
+
+  if $state.outdated.any?
+    if $state.outdated.one?
+      $gtk.log_debug "\n\n" + <<~HELP, "Foodchain"
+        An update is available for #{$state.outdated.first}
+
+        Please run this again with the `--update` option to update.
+      HELP
+    else
+      $gtk.log_debug "\n\n" + <<~HELP, "Foodchain"
+        The following dependencies have updates available:
+        #{$state.outdated.map! { |x| "  * " + x }.join("\n")}
+
+        Please run this again with the `--update` option to update all these
+        depenencies, or run with `--update [dependency-key]` to update single
+        dependencies one at a time.
+      HELP
+    end
   end
 
   $gtk.log_info "All done!", "Foodchain"
