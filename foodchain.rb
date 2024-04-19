@@ -349,6 +349,7 @@ def $gtk.tick_core
       "# being overwritten on your next installation.",
       "",
       $state.locks.to_a.map { |pair| pair.join("\t") }.sort,
+      "",
     ]
 
     $gtk.write_file($state.depfile, contents.flatten.join("\n"))
