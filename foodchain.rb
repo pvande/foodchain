@@ -61,7 +61,6 @@ class Dependency
     @download_queue << Downloader.new(url, headers) do |result|
       case (code = result[:http_response_code])
       when 200
-        next $state.outdated << key if $state.locks[key]
         yield result
       when 304
         $gtk.log_info "#{key} is up-to-date.", "Foodchain"
@@ -79,8 +78,13 @@ class Dependency
   #
   # @param result [Hash] The response from a successful HTTP request.
   def update_lock_version(result)
-    $state.locks[key] = result.dig(:response_headers, "Etag")
-    $state.update_lock_versions = true
+    etag = result.dig(:response_headers, "Etag")
+    if $state.locks[key] && $state.locks[key] != etag
+      $state.outdated << key
+    else
+      $state.locks[key] = etag
+      $state.update_lock_versions = true
+    end
   end
 
   # @return [Boolean] Has this dependency been resolved?

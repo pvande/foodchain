@@ -127,6 +127,10 @@ github :xenobrain, :rubycolors, "color.rb", ref: "bab319b65"
 # Creates `vendor/set.rb`.
 github :mruby, :mruby, "mrbgems/mruby-set/mrblib/set.rb", destination: "vendor/set.rb"
 
+# Download the version of `danhealy/dragonruby-zif/lib` from `main`.
+# Creates `vendor/zif`.
+github :danhealy, "dragonruby-zif", "lib", destination: "vendor/zif"
+
 # Downloads the URL into `vendor/fang/from_now.rb`.
 url "https://gitlab.com/dragon-ruby/fang/-/raw/main/from_now.rb", destination: "vendor/fang/from_now.rb"
 ```
