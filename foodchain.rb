@@ -138,7 +138,7 @@ class Dependency::GitHub < Dependency
   #        path in which to save that file's contents; if `path` refers to a
   #        directory, then the files within that directory will be saved into a
   #        local directory named `destination`.
-  def initialize(owner, repo, path, ref: nil, destination: "vendor/#{owner}/#{repo}/#{path}")
+  def initialize(owner, repo, path, ref: nil, destination: nil)
     super()
 
     @owner = owner
@@ -147,7 +147,7 @@ class Dependency::GitHub < Dependency
     @ref = ref || ""
 
     @url = "https://api.github.com/repos/#{owner}/#{repo}/contents/#{path}"
-    @destination = destination
+    @destination = destination || "vendor/#{owner}/#{repo}/#{path}"
   end
 
   # {include:Dependency#key}
